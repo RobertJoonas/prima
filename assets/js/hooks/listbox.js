@@ -170,7 +170,12 @@ export default {
   },
 
   handleEnterOrSpace(e) {
-    const focusedOption = this.el.querySelector(SELECTORS.FOCUSED_OPTION)
+    // Only trust a focused option while the listbox is actually open - data-focus can
+    // linger on an option after Escape closes the listbox, since clearing it happens in
+    // the async phx:hide-end handler, not synchronously in hideListbox(). Without this
+    // guard, a fast Escape followed by Enter/Space can "click" a stale focused option
+    // instead of reopening the listbox.
+    const focusedOption = this.isListboxVisible() ? this.el.querySelector(SELECTORS.FOCUSED_OPTION) : null
 
     if (focusedOption && focusedOption.getAttribute('aria-disabled') !== 'true') {
       // An option is focused - click it
@@ -361,16 +366,35 @@ export default {
     }
   },
 
+  // phx:show-start/phx:hide-end are dispatched asynchronously by LiveView's transition
+  // machinery, and the actual display mutation on the inner listbox happens as part of
+  // that same internal, multi-step async completion - not synchronously with these
+  // events. A rapid close-then-reopen (or reopen-then-close) can call execJS(show) and
+  // execJS(hide) back-to-back before the previous call's internal steps finish, so their
+  // completions interleave and whichever happens to run last wins, regardless of which
+  // was issued most recently. Both handlers defensively re-assert the inner listbox's
+  // display against our own synchronous source of truth (the wrapper, which
+  // showListboxAndFocus/hideListbox control directly) so a stale completion corrects
+  // itself instead of leaving the inner element in the wrong state.
   handleShowStart() {
+    const shouldBeOpen = this.isListboxVisible()
+    this.refs.listbox.style.display = shouldBeOpen ? '' : 'none'
+    if (!shouldBeOpen) return
+
     this.refs.button.setAttribute('aria-expanded', 'true')
 
     // Setup autoUpdate to reposition on scroll/resize
+    this.cleanupAutoUpdate()
     this.autoUpdateCleanup = autoUpdate(this.refs.referenceElement, this.refs.optionsWrapper, () => {
       this.positionListbox()
     })
   },
 
   handleHideEnd() {
+    const shouldBeOpen = this.isListboxVisible()
+    this.refs.listbox.style.display = shouldBeOpen ? '' : 'none'
+    if (shouldBeOpen) return
+
     this.clearFocus()
     this.refs.button.removeAttribute('aria-activedescendant')
     this.refs.button.setAttribute('aria-expanded', 'false')
